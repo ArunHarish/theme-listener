@@ -1,4 +1,5 @@
-use std::io::{BufWriter, Write};
+use std::error::Error;
+use std::io::{self, BufWriter, Write};
 use std::fmt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::time::Duration;
@@ -58,6 +59,10 @@ impl fmt::Display for Theme {
     }
 }
 
+fn write_to_stream(stream: &mut BufWriter<UnixStream>, value: &[u8]) -> io::Result<()> {
+    stream.write_all(value)?;
+    stream.flush()
+}
 
 fn to_theme(value: i64) -> Theme {
     if value == 1 {
@@ -116,7 +121,9 @@ fn handle_connect(socket_stream: UnixStream, condvar_pair: Arc<(Mutex<Theme>, Co
     let mut stream = BufWriter::new(socket_stream);
     if let Ok(value) = detect_freedesktop_theme() {
         // Use stream to send theme value
-        stream.write_all(value.to_string().as_bytes()).unwrap();
+        if let Err(_) = write_to_stream(&mut stream, value.to_string().as_bytes()) {
+            return ();
+        }
     } else {
         println!("WARNING: Error while fetching theme information");
     }
@@ -125,11 +132,14 @@ fn handle_connect(socket_stream: UnixStream, condvar_pair: Arc<(Mutex<Theme>, Co
     let mut theme_value = mutex.lock().unwrap();
     loop {
        theme_value = condvar.wait(theme_value).unwrap();
-       stream.write_all(theme_value.to_string().as_bytes()).unwrap();
+       // On error stop block listen to theme value
+       if let Err(_) = write_to_stream(&mut stream, theme_value.to_string().as_bytes()) {
+           break;
+        }
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn Error>> {
     let Ok(listener) = UnixListener::bind("/tmp/theme-listener.sock") else {
         panic!("Address already in use");
     };
