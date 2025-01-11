@@ -13,6 +13,17 @@ use dbus::{arg, Message};
 use std::thread;
 use std::sync::{Arc, Condvar, Mutex};
 
+// To check whether socket exists
+use std::fs::{exists, remove_file};
+
+// For libc signal handling
+use libc::{sigaction, SIGTERM, SIGINT, SA_SIGINFO};
+use std::mem;
+use std::ptr;
+use std::process::exit;
+
+const SOCKET_PATH: &str = "/tmp/theme-listener.sock";
+
 enum Theme {
     LIGHT,
     DARK,
@@ -139,14 +150,39 @@ fn handle_connect(socket_stream: UnixStream, condvar_pair: Arc<(Mutex<Theme>, Co
     }
 }
 
+extern "C" fn handle_terminate() {
+    // Delete the socket file
+   match remove_file(SOCKET_PATH) {
+       Ok(_) => {},
+       Err(_) => println!("Error removing socket file"),
+   }
+   exit(0);
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
-    let Ok(listener) = UnixListener::bind("/tmp/theme-listener.sock") else {
+    if exists(SOCKET_PATH)? {
+        return Ok(());
+    }
+
+    // On exit delete the socket file
+    unsafe {
+        let action = sigaction {
+            sa_sigaction: handle_terminate as usize,
+            sa_flags: SA_SIGINFO,
+            sa_restorer: None,
+            sa_mask: mem::zeroed(),
+        };
+        sigaction(SIGINT, &action, ptr::null_mut());
+        sigaction(SIGTERM, &action, ptr::null_mut());
+    }
+
+    let Ok(listener) = UnixListener::bind(SOCKET_PATH) else {
         panic!("Address already in use");
     };
     let theme_condvar_main_pair = Arc::new((Mutex::new(Theme::DARK), Condvar::new()));
     let theme_condvar_publisher_pair = Arc::clone(&theme_condvar_main_pair);
 
-    thread::spawn(move ||  listen_freedesktop_theme(theme_condvar_publisher_pair) );
+    thread::spawn(move ||  listen_freedesktop_theme(theme_condvar_publisher_pair));
 
     for stream in listener.incoming() {
         match stream {

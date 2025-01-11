@@ -7,3 +7,4 @@ edition = "2021"
 
 [dependencies]
 dbus = "0.9.7"
+libc = "0.2.169"
