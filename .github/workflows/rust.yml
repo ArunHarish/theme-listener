@@ -23,6 +23,6 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Install DBUS package
-      run: apt install libdbus-1-dev
+      run: sudo apt install -y libdbus-1-dev
     - name: Build
       run: cargo build --verbose
