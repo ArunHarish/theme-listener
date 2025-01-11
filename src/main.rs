@@ -17,7 +17,7 @@ use std::thread;
 use std::fs::{exists, remove_file};
 
 // For libc signal handling
-use libc::{sigaction, SA_SIGINFO, SIGINT, SIGTERM};
+use libc::{fork, sigaction, SA_SIGINFO, SIGINT, SIGTERM};
 use std::mem;
 use std::process::exit;
 use std::ptr;
@@ -164,6 +164,17 @@ extern "C" fn handle_terminate() {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    // Daemonise the process if -d flag is present
+    if std::env::args().find(|args| args == "-d") != None {
+        unsafe {
+            let process_id = fork();
+            // If parent process then terminate
+            if process_id != 0 {
+                return Ok(());
+            }
+        }
+    }
+
     if exists(SOCKET_PATH)? {
         return Ok(());
     }
