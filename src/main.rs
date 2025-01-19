@@ -1,5 +1,7 @@
+// Modules
+mod theme;
+
 use std::error::Error;
-use std::fmt;
 use std::io::{self, BufWriter, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::time::Duration;
@@ -22,12 +24,10 @@ use std::mem;
 use std::process::exit;
 use std::ptr;
 
-const SOCKET_PATH: &str = "/tmp/theme-listener.sock";
+// Theme import
+use theme::theme::{to_theme, Theme};
 
-enum Theme {
-    LIGHT,
-    DARK,
-}
+const SOCKET_PATH: &str = "/tmp/theme-listener.sock";
 
 pub struct OrgFreeDesktopPortalDesktop {
     pub sender: String,
@@ -56,30 +56,9 @@ impl dbus::message::SignalArgs for OrgFreeDesktopPortalDesktop {
     const INTERFACE: &'static str = "org.freedesktop.portal.Settings";
 }
 
-impl fmt::Display for Theme {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Theme::LIGHT => {
-                write!(f, "light")
-            }
-
-            Theme::DARK => {
-                write!(f, "dark")
-            }
-        }
-    }
-}
-
 fn write_to_stream(stream: &mut BufWriter<UnixStream>, value: &[u8]) -> io::Result<()> {
     stream.write_all(value)?;
     stream.flush()
-}
-
-fn to_theme(value: i64) -> Theme {
-    if value == 1 {
-        return Theme::DARK;
-    }
-    return Theme::LIGHT;
 }
 
 fn detect_freedesktop_theme() -> Result<Theme, dbus::Error> {
