@@ -25,7 +25,7 @@ use std::process::exit;
 use std::ptr;
 
 // Theme import
-use theme::theme::{to_theme, Theme};
+use crate::theme::{to_theme, Theme};
 
 const SOCKET_PATH: &str = "/tmp/theme-listener.sock";
 
