@@ -1,15 +1,16 @@
-// Modules
+// Theme module
 mod theme;
+
+// Linux
+mod linux;
+
+// Client modules
+mod alacritty;
+mod tmux;
 
 use std::error::Error;
 use std::io::{self, BufWriter, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::time::Duration;
-
-// DBus
-use dbus::arg::{RefArg, Variant};
-use dbus::blocking::{Connection, Proxy};
-use dbus::{arg, Message};
 
 // Threads and communication
 use std::sync::{Arc, Condvar, Mutex};
@@ -25,95 +26,47 @@ use std::process::exit;
 use std::ptr;
 
 // Theme import
-use crate::theme::{to_theme, Theme};
+use crate::theme::{Theme, ThemeListener, ThemePublisher};
+
+// Alacritty import
+use crate::alacritty::Alacritty;
+
+// Tmux import
+use crate::tmux::Tmux;
+
+// Linux import
+use crate::linux::DBusPublisher;
 
 const SOCKET_PATH: &str = "/tmp/theme-listener.sock";
-
-pub struct OrgFreeDesktopPortalDesktop {
-    pub sender: String,
-    pub key: String,
-    pub value: Variant<Box<dyn RefArg>>,
-}
-
-impl arg::AppendAll for OrgFreeDesktopPortalDesktop {
-    fn append(&self, i: &mut arg::IterAppend) {
-        RefArg::append(&self.sender, i);
-    }
-}
-
-impl arg::ReadAll for OrgFreeDesktopPortalDesktop {
-    fn read(i: &mut arg::Iter) -> Result<Self, arg::TypeMismatchError> {
-        Ok(OrgFreeDesktopPortalDesktop {
-            sender: i.read()?,
-            key: i.read()?,
-            value: i.read()?,
-        })
-    }
-}
-
-impl dbus::message::SignalArgs for OrgFreeDesktopPortalDesktop {
-    const NAME: &'static str = "SettingChanged";
-    const INTERFACE: &'static str = "org.freedesktop.portal.Settings";
-}
 
 fn write_to_stream(stream: &mut BufWriter<UnixStream>, value: &[u8]) -> io::Result<()> {
     stream.write_all(value)?;
     stream.flush()
 }
 
-fn detect_freedesktop_theme() -> Result<Theme, dbus::Error> {
-    let conn = Connection::new_session()?;
-    let proxy = Proxy::new(
-        "org.freedesktop.portal.Desktop",
-        "/org/freedesktop/portal/desktop",
-        Duration::from_millis(5000),
-        &conn,
-    );
-    let result: (Variant<Box<dyn RefArg>>,) = proxy.method_call(
-        "org.freedesktop.portal.Settings",
-        "Read",
-        ("org.freedesktop.appearance", "color-scheme"),
-    )?;
-    let mut theme: Theme = Theme::DARK;
-
-    if let Some(theme_value) = result.0 .0.as_i64() {
-        theme = to_theme(theme_value);
-    }
-    Ok(theme)
+fn listen_theme<A, B>(publisher: A, condvar_pair: Arc<(Mutex<Theme>, Condvar)>)
+where
+    A: ThemePublisher<B>,
+{
+    publisher.on_publish(Box::new(move |value: Theme| {
+        let (mutex, condvar) = &*condvar_pair;
+        let mut current_theme_value = mutex.lock().unwrap();
+        *current_theme_value = value;
+        condvar.notify_all();
+        ()
+    }));
 }
 
-fn listen_freedesktop_theme(
+fn handle_connect<A, B>(
+    publisher: A,
     condvar_pair: Arc<(Mutex<Theme>, Condvar)>,
-) -> Result<bool, dbus::Error> {
-    let connection = Connection::new_session()?;
-    let proxy = connection.with_proxy(
-        "org.freedesktop.portal.Desktop",
-        "/org/freedesktop/portal/desktop",
-        Duration::from_millis(5000),
-    );
-
-    let _ = proxy.match_signal(
-        move |h: OrgFreeDesktopPortalDesktop, _: &Connection, _: &Message| {
-            if h.sender == "org.freedesktop.appearance" && h.key == "color-scheme" {
-                let (mutex, condvar) = &*condvar_pair;
-                let mut current_theme_value = mutex.lock().unwrap();
-                let next_theme_value = h.value.as_i64().unwrap();
-                *current_theme_value = to_theme(next_theme_value);
-                condvar.notify_all();
-            }
-            true
-        },
-    );
-
-    loop {
-        connection.process(Duration::from_millis(1000))?;
-    }
-}
-
-fn handle_connect(socket_stream: UnixStream, condvar_pair: Arc<(Mutex<Theme>, Condvar)>) {
+    socket_stream: UnixStream,
+) where
+    A: ThemePublisher<B>,
+{
     // Handle stream here
     let mut stream = BufWriter::new(socket_stream);
-    if let Ok(value) = detect_freedesktop_theme() {
+    if let Ok(value) = publisher.fetch() {
         // Use stream to send theme value
         if let Err(_) = write_to_stream(&mut stream, value.to_string().as_bytes()) {
             return ();
@@ -173,16 +126,41 @@ fn main() -> Result<(), Box<dyn Error>> {
     let Ok(listener) = UnixListener::bind(SOCKET_PATH) else {
         panic!("Address already in use");
     };
-    let theme_condvar_main_pair = Arc::new((Mutex::new(Theme::DARK), Condvar::new()));
-    let theme_condvar_publisher_pair = Arc::clone(&theme_condvar_main_pair);
 
-    thread::spawn(move || listen_freedesktop_theme(theme_condvar_publisher_pair));
+    let alacritty = Alacritty::new();
+    let tmux = Tmux::new();
+    let publisher = DBusPublisher::new();
 
+    let theme_condvar_main_pair =
+        Arc::new((Mutex::new(publisher.fetch().unwrap()), Condvar::new()));
+    let theme_condvar_pub_pair = Arc::clone(&theme_condvar_main_pair);
+    let theme_condvar_sub_pair = Arc::clone(&theme_condvar_main_pair);
+
+    thread::spawn(move || listen_theme(publisher, theme_condvar_pub_pair));
+
+    // For alacritty and tmux
+    let theme_alacritty_tmux_sub_pair = theme_condvar_sub_pair.clone();
+    thread::spawn(move || {
+        let (mutex, condvar) = &*theme_alacritty_tmux_sub_pair;
+        let mut theme_value = mutex.lock().unwrap();
+        // Initial call
+        alacritty.clone().handle(*theme_value).unwrap();
+        tmux.clone().handle(*theme_value).unwrap();
+        loop {
+            theme_value = condvar.wait(theme_value).unwrap();
+            alacritty.clone().handle(*theme_value).unwrap();
+            tmux.clone().handle(*theme_value).unwrap();
+        }
+    });
+
+    // For neovim
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                let theme_condvar_subscriber_pair = Arc::clone(&theme_condvar_main_pair);
-                thread::spawn(move || handle_connect(stream, theme_condvar_subscriber_pair));
+                let theme_nvim_client_subscriber_pair = theme_condvar_sub_pair.clone();
+                thread::spawn(move || {
+                    handle_connect(publisher, theme_nvim_client_subscriber_pair, stream)
+                });
             }
             Err(_) => {
                 panic!("Stream error");
