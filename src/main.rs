@@ -9,7 +9,7 @@ mod alacritty;
 mod tmux;
 
 use std::error::Error;
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 
 // Threads and communication
@@ -20,7 +20,7 @@ use std::thread;
 use std::fs::{exists, remove_file};
 
 // For libc signal handling
-use libc::{fork, sigaction, SA_SIGINFO, SIGINT, SIGTERM};
+use libc::{fork, sigaction, SA_SIGINFO, SIGHUP, SIGINT, SIGTERM};
 use std::mem;
 use std::process::exit;
 use std::ptr;
@@ -39,9 +39,28 @@ use crate::linux::DBusPublisher;
 
 const SOCKET_PATH: &str = "/tmp/theme-listener.sock";
 
-fn write_to_stream(stream: &mut BufWriter<UnixStream>, value: &[u8]) -> io::Result<()> {
-    stream.write_all(value)?;
+fn write_to_stream(stream: &mut BufWriter<UnixStream>, value: String) -> io::Result<()> {
+    stream.write_all(format!("{value}\n").as_bytes())?;
     stream.flush()
+}
+
+fn handle_stream<A, B>(listener: A)
+where
+    A: ThemeListener<B> + Clone,
+{
+    let Ok(theme_stream) = UnixStream::connect(SOCKET_PATH) else {
+        panic!("Error listening to server");
+    };
+
+    let mut reader = BufReader::new(theme_stream);
+
+    loop {
+        let mut content = String::new();
+        if let Ok(_) = reader.read_line(&mut content) {
+            let theme_value = theme::to_theme(content.trim());
+            listener.clone().handle(theme_value).unwrap();
+        }
+    }
 }
 
 fn listen_theme<A, B>(publisher: A, condvar_pair: Arc<(Mutex<Theme>, Condvar)>)
@@ -68,7 +87,7 @@ fn handle_connect<A, B>(
     let mut stream = BufWriter::new(socket_stream);
     if let Ok(value) = publisher.fetch() {
         // Use stream to send theme value
-        if let Err(_) = write_to_stream(&mut stream, value.to_string().as_bytes()) {
+        if let Err(_) = write_to_stream(&mut stream, value.to_string()) {
             return ();
         }
     } else {
@@ -80,7 +99,7 @@ fn handle_connect<A, B>(
     loop {
         theme_value = condvar.wait(theme_value).unwrap();
         // On error stop block listen to theme value
-        if let Err(_) = write_to_stream(&mut stream, theme_value.to_string().as_bytes()) {
+        if let Err(_) = write_to_stream(&mut stream, theme_value.to_string()) {
             break;
         }
     }
@@ -96,77 +115,72 @@ extern "C" fn handle_terminate() {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    // Daemonise the process if -d flag is present
-    if std::env::args().find(|args| args == "-d") != None {
-        unsafe {
+    unsafe {
+        if std::env::args().any(|args| args == "-init") {
+            if exists(SOCKET_PATH)? {
+                return Ok(());
+            }
+
+            // Start the UNIX socket server
+            let Ok(listener) = UnixListener::bind(SOCKET_PATH) else {
+                panic!("Error while starting the listener server");
+            };
+
+            let process_id = fork();
+            // If parent exit
+            if process_id != 0 {
+                return Ok(());
+            }
+
+            // On exit delete the socket file
+            let action = sigaction {
+                sa_sigaction: handle_terminate as usize,
+                sa_flags: SA_SIGINFO,
+                sa_restorer: None,
+                sa_mask: mem::zeroed(),
+            };
+            sigaction(SIGINT, &action, ptr::null_mut());
+            sigaction(SIGTERM, &action, ptr::null_mut());
+            sigaction(SIGHUP, &action, ptr::null_mut());
+
+            let publisher = DBusPublisher::new();
+            let theme_condvar_main_pair =
+                Arc::new((Mutex::new(publisher.fetch().unwrap()), Condvar::new()));
+            let theme_condvar_pub_pair = Arc::clone(&theme_condvar_main_pair);
+            let theme_condvar_sub_pair = Arc::clone(&theme_condvar_main_pair);
+
+            thread::spawn(move || listen_theme(publisher, theme_condvar_pub_pair));
+            // Listening to incoming connections
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(stream) => {
+                        let theme_nvim_client_subscriber_pair = theme_condvar_sub_pair.clone();
+                        thread::spawn(move || {
+                            handle_connect(publisher, theme_nvim_client_subscriber_pair, stream)
+                        });
+                    }
+                    Err(_) => {
+                        panic!("Stream error");
+                    }
+                }
+            }
+            return Ok(());
+        } else if std::env::args().any(|args| args == "-d") {
             let process_id = fork();
             // If parent process then terminate
             if process_id != 0 {
                 return Ok(());
             }
         }
-    }
 
-    if exists(SOCKET_PATH)? {
-        return Ok(());
-    }
-
-    // On exit delete the socket file
-    unsafe {
-        let action = sigaction {
-            sa_sigaction: handle_terminate as usize,
-            sa_flags: SA_SIGINFO,
-            sa_restorer: None,
-            sa_mask: mem::zeroed(),
-        };
-        sigaction(SIGINT, &action, ptr::null_mut());
-        sigaction(SIGTERM, &action, ptr::null_mut());
-    }
-
-    let Ok(listener) = UnixListener::bind(SOCKET_PATH) else {
-        panic!("Address already in use");
-    };
-
-    let alacritty = Alacritty::new();
-    let tmux = Tmux::new();
-    let publisher = DBusPublisher::new();
-
-    let theme_condvar_main_pair =
-        Arc::new((Mutex::new(publisher.fetch().unwrap()), Condvar::new()));
-    let theme_condvar_pub_pair = Arc::clone(&theme_condvar_main_pair);
-    let theme_condvar_sub_pair = Arc::clone(&theme_condvar_main_pair);
-
-    thread::spawn(move || listen_theme(publisher, theme_condvar_pub_pair));
-
-    // For alacritty and tmux
-    let theme_alacritty_tmux_sub_pair = theme_condvar_sub_pair.clone();
-    thread::spawn(move || {
-        let (mutex, condvar) = &*theme_alacritty_tmux_sub_pair;
-        let mut theme_value = mutex.lock().unwrap();
-        // Initial call
-        alacritty.clone().handle(*theme_value).unwrap();
-        tmux.clone().handle(*theme_value).unwrap();
-        loop {
-            theme_value = condvar.wait(theme_value).unwrap();
-            alacritty.clone().handle(*theme_value).unwrap();
-            tmux.clone().handle(*theme_value).unwrap();
+        if std::env::args().any(|args| args == "-alacritty") {
+            let alacritty = Alacritty::new();
+            handle_stream(alacritty);
+        } else if std::env::args().any(|args| args == "-tmux") {
+            let tmux = Tmux::new();
+            handle_stream(tmux);
         }
-    });
 
-    // For neovim
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                let theme_nvim_client_subscriber_pair = theme_condvar_sub_pair.clone();
-                thread::spawn(move || {
-                    handle_connect(publisher, theme_nvim_client_subscriber_pair, stream)
-                });
-            }
-            Err(_) => {
-                panic!("Stream error");
-            }
-        }
+        Ok(())
     }
-
-    Ok(())
 }
