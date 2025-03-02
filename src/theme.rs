@@ -20,6 +20,17 @@ impl std::fmt::Display for Theme {
 }
 
 /**
+ * To convert a string representation of theme value to Theme
+ */
+pub fn to_theme(value: &str) -> Theme {
+    match value {
+        "light" => Theme::LIGHT,
+        "dark" => Theme::DARK,
+        _ => panic!("Invalid theme value to parse"),
+    }
+}
+
+/**
  * Trait for listeners to implement their own custom logic.
  */
 pub trait ThemeListener<T> {
