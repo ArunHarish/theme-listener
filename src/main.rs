@@ -40,6 +40,15 @@ use crate::linux::DBusPublisher;
 fn publisher_factory() -> DBusPublisher {
     return DBusPublisher::new();
 }
+#[cfg(target_os = "linux")]
+unsafe fn setup_signal_handler() -> sigaction {
+    sigaction {
+        sa_sigaction: handle_terminate as usize,
+        sa_flags: SA_SIGINFO,
+        sa_restorer: None,
+        sa_mask: mem::zeroed(),
+    }
+}
 
 // Mac os
 #[cfg(target_os = "macos")]
@@ -49,6 +58,14 @@ use crate::macos::KVOPublisher;
 #[cfg(target_os = "macos")]
 fn publisher_factory() -> KVOPublisher {
     return KVOPublisher::new();
+}
+#[cfg(target_os = "macos")]
+unsafe fn setup_signal_handler() -> sigaction {
+    sigaction {
+        sa_sigaction: handle_terminate as usize,
+        sa_flags: SA_SIGINFO,
+        sa_mask: mem::zeroed(),
+    }
 }
 
 const SOCKET_PATH: &str = "/tmp/theme-listener.sock";
@@ -147,12 +164,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
 
             // On exit delete the socket file
-            let action = sigaction {
-                sa_sigaction: handle_terminate as usize,
-                sa_flags: SA_SIGINFO,
-                // sa_restorer: None,
-                sa_mask: mem::zeroed(),
-            };
+            let action = setup_signal_handler();
             sigaction(SIGINT, &action, ptr::null_mut());
             sigaction(SIGTERM, &action, ptr::null_mut());
             sigaction(SIGHUP, &action, ptr::null_mut());
