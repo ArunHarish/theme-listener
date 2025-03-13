@@ -44,7 +44,7 @@ impl DBusPublisher {
 }
 
 impl ThemePublisher<i64> for DBusPublisher {
-    fn fetch(mut self) -> Result<Theme, Box<dyn Error>> {
+    fn fetch(self) -> Result<Theme, Box<dyn Error>> {
         let conn = Connection::new_session()?;
         let proxy = Proxy::new(
             "org.freedesktop.portal.Desktop",
@@ -65,7 +65,7 @@ impl ThemePublisher<i64> for DBusPublisher {
         Ok(theme)
     }
 
-    fn on_publish(mut self, mut callback: Box<dyn FnMut(Theme) + Send>) {
+    fn on_publish(self, callback: Box<dyn Fn(Theme) + Send>) {
         let connection = Connection::new_session().unwrap();
         let proxy = connection.with_proxy(
             "org.freedesktop.portal.Desktop",
@@ -89,7 +89,7 @@ impl ThemePublisher<i64> for DBusPublisher {
         }
     }
 
-    fn to_theme(&mut self, value: i64) -> Theme {
+    fn to_theme(self, value: i64) -> Theme {
         if value == 1 {
             return Theme::DARK;
         }

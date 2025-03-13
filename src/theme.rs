@@ -56,11 +56,11 @@ pub trait ThemePublisher<T> {
      * A function to trigger on theme change
      * @param callback function to be called on theme change
      */
-    fn on_publish(self, callback: Box<dyn FnMut(Theme) + Send>);
+    fn on_publish(self, callback: Box<dyn Fn(Theme) + Send>);
 
     /**
      * Method to convert publisher value to Theme
      * @param value The publisher specific input
      */
-    fn to_theme(&mut self, value: T) -> Theme;
+    fn to_theme(self, value: T) -> Theme;
 }
