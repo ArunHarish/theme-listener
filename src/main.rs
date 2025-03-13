@@ -1,9 +1,6 @@
 // Theme module
 mod theme;
 
-// Linux
-mod linux;
-
 // Client modules
 mod alacritty;
 mod tmux;
@@ -34,8 +31,25 @@ use crate::alacritty::Alacritty;
 // Tmux import
 use crate::tmux::Tmux;
 
-// Linux import
+// Linux
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
 use crate::linux::DBusPublisher;
+#[cfg(target_os = "linux")]
+fn publisher_factory() -> DBusPublisher {
+    return DBusPublisher::new();
+}
+
+// Mac os
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+use crate::macos::KVOPublisher;
+#[cfg(target_os = "macos")]
+fn publisher_factory() -> KVOPublisher {
+    return KVOPublisher::new();
+}
 
 const SOCKET_PATH: &str = "/tmp/theme-listener.sock";
 
@@ -136,20 +150,19 @@ fn main() -> Result<(), Box<dyn Error>> {
             let action = sigaction {
                 sa_sigaction: handle_terminate as usize,
                 sa_flags: SA_SIGINFO,
-                sa_restorer: None,
+                // sa_restorer: None,
                 sa_mask: mem::zeroed(),
             };
             sigaction(SIGINT, &action, ptr::null_mut());
             sigaction(SIGTERM, &action, ptr::null_mut());
             sigaction(SIGHUP, &action, ptr::null_mut());
 
-            let publisher = DBusPublisher::new();
+            let publisher = publisher_factory();
             let theme_condvar_main_pair =
                 Arc::new((Mutex::new(publisher.fetch().unwrap()), Condvar::new()));
             let theme_condvar_pub_pair = Arc::clone(&theme_condvar_main_pair);
             let theme_condvar_sub_pair = Arc::clone(&theme_condvar_main_pair);
 
-            thread::spawn(move || listen_theme(publisher, theme_condvar_pub_pair));
             // Listening to incoming connections
             thread::spawn(move || {
                 for stream in listener.incoming() {
