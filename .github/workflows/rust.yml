@@ -17,7 +17,7 @@ jobs:
     - name: Format check
       run: cargo fmt --check
       
-  build:
+  build-ubuntu:
     runs-on: ubuntu-latest
     needs: [code_quality]
     steps:
@@ -26,3 +26,11 @@ jobs:
       run: sudo apt install -y libdbus-1-dev
     - name: Build
       run: cargo build --verbose
+
+  build-macosx:
+    runs-on: macos-latest
+    needs: [code_quality]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: cargo build --verbose
