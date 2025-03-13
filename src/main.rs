@@ -151,19 +151,23 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             thread::spawn(move || listen_theme(publisher, theme_condvar_pub_pair));
             // Listening to incoming connections
-            for stream in listener.incoming() {
-                match stream {
-                    Ok(stream) => {
-                        let theme_nvim_client_subscriber_pair = theme_condvar_sub_pair.clone();
-                        thread::spawn(move || {
-                            handle_connect(publisher, theme_nvim_client_subscriber_pair, stream)
-                        });
-                    }
-                    Err(_) => {
-                        panic!("Stream error");
+            thread::spawn(move || {
+                for stream in listener.incoming() {
+                    match stream {
+                        Ok(stream) => {
+                            let theme_client_subscriber = theme_condvar_sub_pair.clone();
+                            thread::spawn(move || {
+                                handle_connect(publisher, theme_client_subscriber, stream);
+                            });
+                        }
+                        Err(_) => {
+                            panic!("Stream error");
+                        }
                     }
                 }
-            }
+            });
+
+            listen_theme(publisher, theme_condvar_pub_pair);
             return Ok(());
         } else if std::env::args().any(|args| args == "-d") {
             let process_id = fork();
