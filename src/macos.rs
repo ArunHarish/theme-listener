@@ -17,8 +17,10 @@ struct ThemeObserverIvars {
 }
 
 impl ThemeObserver {
-    fn new(callback: Box<dyn Fn(Retained<NSString>)>) -> Retained<Self> {
-        let observer = Self::alloc().set_ivars(ThemeObserverIvars { callback });
+    fn new(callback: impl Fn(Retained<NSString>) + 'static) -> Retained<Self> {
+        let observer = Self::alloc().set_ivars(ThemeObserverIvars {
+            callback: Box::new(callback),
+        });
         unsafe { msg_send![super(observer), init] }
     }
 
@@ -76,10 +78,10 @@ impl ThemePublisher<Retained<NSString>> for KVOPublisher {
     fn on_publish(self, callback: Box<dyn Fn(Theme) + Send + 'static>) {
         let mtm = MainThreadMarker::new().unwrap();
         let app = NSApplication::sharedApplication(mtm);
-        let observer = ThemeObserver::new(Box::new(move |theme_value: Retained<NSString>| {
-            let next_theme = self.to_theme(theme_value);
+        let observer = ThemeObserver::new(move |next_theme_value: Retained<NSString>| {
+            let next_theme = self.to_theme(next_theme_value);
             callback(next_theme);
-        }));
+        });
 
         // Register app observer key path
         unsafe {
