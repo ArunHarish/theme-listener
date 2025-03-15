@@ -1,9 +1,19 @@
-// Theme module
+// Theme modules
 mod theme;
+mod theme_listener;
+mod theme_publisher;
 
-// Client modules
-mod alacritty;
-mod tmux;
+// Theme import
+use crate::theme::Theme;
+use crate::theme_listener::ThemeListener;
+use crate::theme_publisher::ThemePublisher;
+
+// Publisher
+use theme_publisher::create_publisher;
+
+// Listeners
+use crate::theme_listener::alacritty::Alacritty;
+use crate::theme_listener::tmux::Tmux;
 
 use std::error::Error;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
@@ -22,53 +32,29 @@ use std::mem;
 use std::process::exit;
 use std::ptr;
 
-// Theme import
-use crate::theme::{Theme, ThemeListener, ThemePublisher};
-
-// Alacritty import
-use crate::alacritty::Alacritty;
-
-// Tmux import
-use crate::tmux::Tmux;
-
-// Linux
-#[cfg(target_os = "linux")]
-mod linux;
-#[cfg(target_os = "linux")]
-use crate::linux::DBusPublisher;
-#[cfg(target_os = "linux")]
-fn publisher_factory() -> DBusPublisher {
-    return DBusPublisher::new();
-}
-#[cfg(target_os = "linux")]
-unsafe fn setup_signal_handler() -> sigaction {
-    sigaction {
-        sa_sigaction: handle_terminate as usize,
-        sa_flags: SA_SIGINFO,
-        sa_restorer: None,
-        sa_mask: mem::zeroed(),
-    }
-}
-
-// Mac os
-#[cfg(target_os = "macos")]
-mod macos;
-#[cfg(target_os = "macos")]
-use crate::macos::KVOPublisher;
-#[cfg(target_os = "macos")]
-fn publisher_factory() -> KVOPublisher {
-    return KVOPublisher::new();
-}
-#[cfg(target_os = "macos")]
-unsafe fn setup_signal_handler() -> sigaction {
-    sigaction {
-        sa_sigaction: handle_terminate as usize,
-        sa_flags: SA_SIGINFO,
-        sa_mask: mem::zeroed(),
-    }
-}
-
 const SOCKET_PATH: &str = "/tmp/theme-listener.sock";
+
+// sigaction definition specific to os
+cfg_if::cfg_if!(
+    if #[cfg(target_os = "linux")] {
+        unsafe fn setup_signal_handler() -> sigaction {
+            sigaction {
+                sa_sigaction: handle_terminate as usize,
+                sa_flags: SA_SIGINFO,
+                sa_restorer: None,
+                sa_mask: mem::zeroed(),
+            }
+        }
+    } else if #[cfg(target_os = "macos")] {
+        unsafe fn setup_signal_handler() -> sigaction {
+            sigaction {
+                sa_sigaction: handle_terminate as usize,
+                sa_flags: SA_SIGINFO,
+                sa_mask: mem::zeroed(),
+            }
+        }
+    }
+);
 
 fn write_to_stream(stream: &mut BufWriter<UnixStream>, value: String) -> io::Result<()> {
     stream.write_all(format!("{value}\n").as_bytes())?;
@@ -169,7 +155,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             sigaction(SIGTERM, &action, ptr::null_mut());
             sigaction(SIGHUP, &action, ptr::null_mut());
 
-            let publisher = publisher_factory();
+            let publisher = create_publisher();
             let theme_condvar_main_pair =
                 Arc::new((Mutex::new(publisher.fetch().unwrap()), Condvar::new()));
             let theme_condvar_pub_pair = Arc::clone(&theme_condvar_main_pair);
