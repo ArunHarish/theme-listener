@@ -1,4 +1,6 @@
-use crate::theme::{Theme, ThemePublisher};
+use super::ThemePublisher;
+
+use crate::theme::Theme;
 use objc2::{define_class, extern_methods, msg_send, AllocAnyThread, DefinedClass};
 use objc2_app_kit::{NSAppearance, NSApplication};
 use objc2_foundation::{
