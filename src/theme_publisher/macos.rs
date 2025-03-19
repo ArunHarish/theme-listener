@@ -70,7 +70,7 @@ impl KVOPublisher {
 impl ThemePublisher<Retained<NSString>> for KVOPublisher {
     fn fetch(self) -> Result<Theme, Box<dyn std::error::Error>> {
         unsafe {
-            let appearance = NSAppearance::currentDrawingAppearance();
+            let appearance = NSAppearance::currentAppearance().unwrap();
             let theme_value = appearance.name();
             let theme: Theme = self.to_theme(theme_value);
             Ok(theme)
